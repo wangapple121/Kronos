@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import sys
@@ -67,36 +69,81 @@ predictor = KronosPredictor(model, tokenizer, device=device, max_context=512)
 
 # 4. 准备数据
 #df = pd.read_csv("./data/XSHG_5min_600977.csv")
-df = pd.read_csv("./data/BABA_daily_kline_2023_to_now.csv")
+# df = pd.read_csv("./data/BABA_daily_kline_2023_to_now.csv")
+df = pd.read_csv("./data/601995_daily_kline_last_year_2.csv")
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
-lookback = 400
-pred_len = 120
+# 根据用户要求，使用最新的数据往前推200个交易日作为训练数据
+latest_date = df['timestamps'].max()
+start_date = latest_date - timedelta(days=200)
+# 1. 训练数据：最后200天
+x_df = df[df['timestamps'] <= latest_date].tail(200)[['open', 'high', 'low', 'close', 'volume', 'amount']]
+x_timestamp = df[df['timestamps'] <= latest_date].tail(200)['timestamps']
 
-x_df = df.loc[:lookback-1, ['open', 'high', 'low', 'close', 'volume', 'amount']]
-x_timestamp = df.loc[:lookback-1, 'timestamps']
-y_timestamp = df.loc[lookback:lookback+pred_len-1, 'timestamps']
+
+# 生成足够多的日期，然后手动过滤掉节假日
+y_timestamp_full = pd.date_range(start='2025-10-01', periods=60, freq='D')
+
+y_timestamp_filtered = []
+count = 0
+
+for date in y_timestamp_full:
+    # 跳过周末 (Saturday=5, Sunday=6)
+    if date.weekday() >= 5:
+        continue
+    # 跳过国庆假期
+    # if date.month == 10 and 1 <= date.day <= 8:
+    #     continue
+
+    y_timestamp_filtered.append(date)
+    count += 1
 
 
-# 5. 进行预测
+    if count >= 30:  # 只需要30个交易日
+        break
+
+# 检查是否生成了足够的日期
+if len(y_timestamp_filtered) < 30:
+    print(f"警告：只生成了 {len(y_timestamp_filtered)} 个交易日的日期，少于所需的30个")
+
+y_timestamp = pd.DatetimeIndex(y_timestamp_filtered)
+
+# 4. Make Prediction
+# 将y_timestamp转换为Series以匹配模型期望的输入格式
+y_timestamp_series = pd.Series(y_timestamp)
+
 pred_df = predictor.predict(
     df=x_df,
     x_timestamp=x_timestamp,
-    y_timestamp=y_timestamp,
-    pred_len=pred_len,
+    y_timestamp=y_timestamp_series,
+    pred_len=len(y_timestamp_filtered),
     T=1.0,
     top_p=0.9,
-    sample_count=1,
+    sample_count=5,  # 增加采样次数以获得更稳定的预测
     verbose=True
 )
 
-
-# 6. 可视化结果
-print("预测数据头部:")
+# 5. Visualize Results
+print("Forecasted Data Head:")
 print(pred_df.head())
 
-# 合并历史数据和预测数据用于绘图
-kline_df = df.loc[:lookback+pred_len-1]
+# 4. 绘图：历史 vs 预测
+kline_df = df[df['timestamps'] <= latest_date].tail(200).set_index('timestamps')  # 只有历史
 
-# 可视化
-plot_prediction(kline_df, pred_df)
+# 绘图
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+ax1.plot(kline_df['close'], label='Historical Close', color='blue', linewidth=1.5)
+ax1.plot(pred_df['close'], label='Predicted Close', color='red', linewidth=1.5, linestyle='--')
+ax1.set_ylabel('Close Price')
+ax1.legend()
+ax1.grid(True)
+
+ax2.plot(kline_df['volume'], label='Historical Volume', color='blue', linewidth=1.5)
+ax2.plot(pred_df['volume'], label='Predicted Volume', color='red', linewidth=1.5, linestyle='--')
+ax2.set_ylabel('Volume')
+ax2.legend()
+ax2.grid(True)
+
+plt.xlabel('Date')
+plt.tight_layout()
+plt.show()
